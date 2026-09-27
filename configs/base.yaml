@@ -1,0 +1,80 @@
+# Base configuration with defaults
+# Inherited by experiment configs
+
+defaults:
+  - _self_
+
+experiment:
+  name: "base"
+  description: "Base configuration"
+  seed: 42
+  device: "auto"
+
+data:
+  manifest_path: ""
+  target_size: [224, 224]
+  num_workers: 4
+  pin_memory: true
+  train_transforms:
+    hflip_prob: 0.5
+    color_jitter: 0.0
+    random_erase_prob: 0.0
+    normalize: true
+  eval_transforms:
+    normalize: true
+
+model:
+  branch: "spatial"
+  branch_config:
+    pretrained: true
+    embedding_dim: 256
+    backbone_out_dim: 768
+    dropout: 0.0
+
+training:
+  epochs: 10
+  batch_size: 32
+  loss: "bce_with_logits"
+  optimizer: "adamw"
+  learning_rate: 1e-4
+  weight_decay: 1e-4
+  scheduler: "cosine"
+  scheduler_params:
+    T_max: 10
+    eta_min: 1e-6
+  gradient_clip: 1.0
+  log_interval: 50
+  early_stopping:
+    enabled: true
+    patience: 5
+    min_delta: 1e-4
+    monitor: "val/f1"
+
+evaluation:
+  threshold: 0.5
+  metrics:
+    - accuracy
+    - precision
+    - recall
+    - f1
+    - roc_auc
+    - pr_auc
+    - fpr
+    - fnr
+  calibration:
+    enabled: false
+    method: "temperature"
+
+checkpoint:
+  dir: "checkpoints"
+  save_best: true
+  save_last: true
+  metric: "val/f1"
+  mode: "max"
+
+logging:
+  use_wandb: false
+  use_tensorboard: true
+  log_dir: "logs"
+  log_config: true
+  log_model_summary: true

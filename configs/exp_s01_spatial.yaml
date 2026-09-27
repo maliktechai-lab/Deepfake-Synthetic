@@ -1,0 +1,90 @@
+# EXP-S01: Spatial Baseline Configuration
+# ConvNeXt-Tiny on aligned face crops (224x224 RGB)
+# Binary classification: 0=AUTHENTIC, 1=MANIPULATED
+
+experiment:
+  name: "exp_s01_spatial"
+  description: "Spatial baseline using ConvNeXt-Tiny on aligned face crops"
+  seed: 42
+  device: "auto"  # auto, cuda, cpu, mps
+
+# Dataset configuration
+data:
+  manifest_path: "data/manifest.csv"  # Path to dataset manifest
+  target_size: [224, 224]
+  num_workers: 4
+  pin_memory: true
+
+  # Augmentation (training only)
+  train_transforms:
+    hflip_prob: 0.5
+    color_jitter: 0.1
+    random_erase_prob: 0.1
+    normalize: true
+
+  # Evaluation transforms (no augmentation)
+  eval_transforms:
+    normalize: true
+
+# Model configuration
+model:
+  branch: "spatial"
+  branch_config:
+    pretrained: true
+    embedding_dim: 256
+    backbone_out_dim: 768
+    dropout: 0.1
+
+# Training configuration
+training:
+  epochs: 20
+  batch_size: 32
+  loss: "bce_with_logits"
+  optimizer: "adamw"
+  learning_rate: 1e-4
+  weight_decay: 1e-4
+  scheduler: "cosine"
+  scheduler_params:
+    T_max: 20  # epochs
+    eta_min: 1e-6
+  gradient_clip: 1.0
+  log_interval: 50
+
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 5
+    min_delta: 1e-4
+    monitor: "val/f1"
+
+# Evaluation configuration
+evaluation:
+  threshold: 0.5
+  metrics:
+    - accuracy
+    - precision
+    - recall
+    - f1
+    - roc_auc
+    - pr_auc
+    - fpr
+    - fnr
+  calibration:
+    enabled: false  # NOT part of S01
+    method: "temperature"
+
+# Checkpointing
+checkpoint:
+  dir: "checkpoints/exp_s01_spatial"
+  save_best: true
+  save_last: true
+  metric: "val/f1"
+  mode: "max"
+
+# Logging
+logging:
+  use_wandb: false
+  use_tensorboard: true
+  log_dir: "logs/exp_s01_spatial"
+  log_config: true
+  log_model_summary: true
