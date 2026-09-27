@@ -43,6 +43,7 @@ from deepfake_forensics.preprocessing.face_detector import (
     compute_quality_metrics,
     estimate_similarity_transform,
     expand_bbox,
+    transform_landmarks_to_crop,
 )
 
 # Pipeline exports
@@ -54,6 +55,7 @@ from deepfake_forensics.preprocessing.pipeline import (
     PreprocessingResult,
     ProcessingStatus,
     create_manifest,
+    create_audit_manifest,
     load_preprocessing_config,
     save_preprocessing_config,
 )
@@ -68,6 +70,7 @@ __all__ = [
     "compute_quality_metrics",
     "estimate_similarity_transform",
     "expand_bbox",
+    "transform_landmarks_to_crop",
     # Pipeline
     "ImagePreprocessor",
     "VideoPreprocessor",
@@ -76,6 +79,7 @@ __all__ = [
     "PreprocessingResult",
     "ProcessingStatus",
     "create_manifest",
+    "create_audit_manifest",
     "load_preprocessing_config",
     "save_preprocessing_config",
 ]

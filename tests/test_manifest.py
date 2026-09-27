@@ -153,6 +153,99 @@ class TestManifestValidation:
         manifest = Manifest(dataframe=df)
         assert len(manifest) == 3
 
+    def test_source_sha256_cross_split_leakage(self):
+        """Test that source_sha256 appearing in multiple splits fails (source-level leakage)."""
+        df = pd.DataFrame({
+            "sample_id": ["s1", "s2", "s3"],
+            "media_id": ["m1", "m2", "m3"],
+            "label": [0, 1, 0],
+            "file_path": ["/fake/s1.jpg", "/fake/s2.jpg", "/fake/s3.jpg"],
+            "split": ["train", "test", "train"],
+            "source_sha256": ["abc123", "abc123", "def456"],  # Same source in train and test
+        })
+        with pytest.raises(ValueError, match="source_sha256 appears in multiple splits"):
+            Manifest(dataframe=df)
+
+    def test_source_sha256_train_val_leakage(self):
+        """Test that source_sha256 appearing in train and val fails."""
+        df = pd.DataFrame({
+            "sample_id": ["s1", "s2", "s3"],
+            "media_id": ["m1", "m2", "m3"],
+            "label": [0, 1, 0],
+            "file_path": ["/fake/s1.jpg", "/fake/s2.jpg", "/fake/s3.jpg"],
+            "split": ["train", "val", "train"],
+            "source_sha256": ["abc123", "abc123", "def456"],  # Same source in train and val
+        })
+        with pytest.raises(ValueError, match="source_sha256 appears in multiple splits"):
+            Manifest(dataframe=df)
+
+    def test_source_sha256_val_test_leakage(self):
+        """Test that source_sha256 appearing in val and test fails."""
+        df = pd.DataFrame({
+            "sample_id": ["s1", "s2", "s3"],
+            "media_id": ["m1", "m2", "m3"],
+            "label": [0, 1, 0],
+            "file_path": ["/fake/s1.jpg", "/fake/s2.jpg", "/fake/s3.jpg"],
+            "split": ["train", "val", "test"],
+            "source_sha256": ["abc1", "abc2", "abc2"],  # Same source in val and test
+        })
+        with pytest.raises(ValueError, match="source_sha256 appears in multiple splits"):
+            Manifest(dataframe=df)
+
+    def test_derived_sha256_same_source_different_artifacts(self):
+        """Test that different derived_sha256 from same source_sha256 still fails source leakage."""
+        df = pd.DataFrame({
+            "sample_id": ["s1", "s2", "s3"],
+            "media_id": ["m1", "m2", "m3"],
+            "label": [0, 1, 0],
+            "file_path": ["/fake/s1.jpg", "/fake/s2.jpg", "/fake/s3.jpg"],
+            "split": ["train", "test", "train"],
+            "source_sha256": ["abc123", "abc123", "def456"],  # Same source in train and test
+            "derived_sha256": ["art1", "art2", "art3"],  # Different artifacts
+        })
+        # Should fail on source_sha256 leakage even though derived artifacts differ
+        with pytest.raises(ValueError, match="source_sha256 appears in multiple splits"):
+            Manifest(dataframe=df)
+
+    def test_different_source_sha256_allowed(self):
+        """Test that different source_sha256 values are allowed."""
+        df = pd.DataFrame({
+            "sample_id": ["s1", "s2", "s3", "s4"],
+            "media_id": ["m1", "m2", "m3", "m4"],
+            "label": [0, 1, 0, 1],
+            "file_path": ["/fake/s1.jpg", "/fake/s2.jpg", "/fake/s3.jpg", "/fake/s4.jpg"],
+            "split": ["train", "test", "val", "train"],
+            "source_sha256": ["src1", "src2", "src3", "src4"],  # All different sources
+        })
+        manifest = Manifest(dataframe=df)
+        assert len(manifest) == 4
+
+    def test_derived_sha256_cross_split_leakage(self):
+        """Test that derived_sha256 appearing in multiple splits fails (artifact deduplication)."""
+        df = pd.DataFrame({
+            "sample_id": ["s1", "s2", "s3"],
+            "media_id": ["m1", "m2", "m3"],
+            "label": [0, 1, 0],
+            "file_path": ["/fake/s1.jpg", "/fake/s2.jpg", "/fake/s3.jpg"],
+            "split": ["train", "test", "train"],
+            "derived_sha256": ["art123", "art123", "art456"],  # Same artifact in train and test
+        })
+        with pytest.raises(ValueError, match="derived_sha256 appears in multiple splits"):
+            Manifest(dataframe=df)
+
+    def test_source_id_cross_split_leakage(self):
+        """Test that source_id appearing in multiple splits fails."""
+        df = pd.DataFrame({
+            "sample_id": ["s1", "s2", "s3"],
+            "media_id": ["m1", "m2", "m3"],
+            "label": [0, 1, 0],
+            "file_path": ["/fake/s1.jpg", "/fake/s2.jpg", "/fake/s3.jpg"],
+            "split": ["train", "test", "train"],
+            "source_id": ["src1", "src1", "src2"],  # Same source_id in train and test
+        })
+        with pytest.raises(ValueError, match="source_id appears in multiple splits"):
+            Manifest(dataframe=df)
+
     def test_valid_split_exclusivity(self):
         """Test that valid split-exclusive manifest passes."""
         df = pd.DataFrame({
@@ -162,7 +255,8 @@ class TestManifestValidation:
             "file_path": ["/fake/s1.jpg", "/fake/s2.jpg", "/fake/s3.jpg", "/fake/s4.jpg"],
             "split": ["train", "train", "val", "test"],
             "identity_id": ["id1", "id2", "id3", "id4"],
-            "sha256": ["abc1", "abc2", "abc3", "abc4"],
+            "source_sha256": ["src1", "src2", "src3", "src4"],
+            "derived_sha256": ["art1", "art2", "art3", "art4"],
         })
         manifest = Manifest(dataframe=df)
         assert len(manifest) == 4

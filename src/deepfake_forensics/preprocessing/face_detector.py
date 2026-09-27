@@ -200,6 +200,26 @@ def expand_bbox(
     return (new_x1, new_y1, new_x2, new_y2)
 
 
+def transform_landmarks_to_crop(
+    landmarks: np.ndarray,
+    crop_bbox: Tuple[int, int, int, int],
+) -> np.ndarray:
+    """
+    Transform landmarks from source image coordinates to crop coordinates.
+    
+    Args:
+        landmarks: Landmarks in source image coordinates, shape (N, 2)
+        crop_bbox: Crop bounding box (x1, y1, x2, y2) in source image coordinates
+        
+    Returns:
+        Landmarks in crop coordinates, shape (N, 2)
+    """
+    x1, y1, x2, y2 = crop_bbox
+    # Subtract crop origin
+    transformed = landmarks - np.array([x1, y1], dtype=np.float32)
+    return transformed
+
+
 # Canonical 5-point landmark template for 224x224 aligned face
 # Based on standard facial landmark positions (normalized to 224x224)
 # Order: left_eye, right_eye, nose, left_mouth, right_mouth

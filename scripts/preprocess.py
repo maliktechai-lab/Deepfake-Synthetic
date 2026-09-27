@@ -3,7 +3,19 @@
 Preprocessing script for EXP-S01.
 
 Usage:
-    python scripts/preprocess.py --input-dir data/raw --output-dir data/derived --manifest data/manifests/preprocessed.csv --config configs/preprocessing.yaml
+    python scripts/preprocess.py --input-dir data/raw --output-dir data/derived --manifest data/manifests/preprocessed.csv --config configs/preprocessing.yaml --metadata data/metadata.csv
+
+The --metadata CSV must contain per-file metadata with columns:
+- file_path (relative to input-dir or absolute)
+- label (0=authentic, 1=manipulated) [REQUIRED]
+- dataset [REQUIRED]
+- split (train/val/test) [REQUIRED]
+- identity_id (optional)
+- source_id (optional)
+- manipulation_type (optional)
+- generator (optional)
+
+This script does NOT invent metadata. All metadata must be provided explicitly.
 """
 
 import argparse
@@ -22,22 +34,46 @@ from deepfake_forensics.preprocessing import (
     load_preprocessing_config,
     save_preprocessing_config,
     create_manifest,
+    create_audit_manifest,
 )
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run preprocessing pipeline for EXP-S01")
+    parser = argparse.ArgumentParser(
+        description="Run preprocessing pipeline for EXP-S01",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+EXAMPLES:
+    # Process with explicit metadata CSV (REQUIRED)
+    python scripts/preprocess.py \
+        --input-dir data/raw \
+        --output-dir data/derived \
+        --manifest data/manifests/train.csv \
+        --metadata data/metadata.csv \
+        --config configs/preprocessing.yaml
+
+    # Dry run to see what would be processed
+    python scripts/preprocess.py \
+        --input-dir data/raw \
+        --output-dir data/derived \
+        --manifest data/manifests/train.csv \
+        --metadata data/metadata.csv \
+        --dry-run
+
+METADATA CSV FORMAT (required columns):
+    file_path,label,dataset,split,identity_id,source_id,manipulation_type,generator
+    video1.mp4,1,FF++,train,id_001,src_001,Deepfakes,faceswap
+    video2.mp4,0,FF++,train,id_002,src_002,None,None
+"""
+    )
     parser.add_argument("--input-dir", type=str, required=True, help="Input directory with raw media")
     parser.add_argument("--output-dir", type=str, required=True, help="Output directory for derived artifacts")
-    parser.add_argument("--manifest", type=str, required=True, help="Output manifest CSV path")
+    parser.add_argument("--manifest", type=str, required=True, help="Output training-ready manifest CSV path")
+    parser.add_argument("--audit-manifest", type=str, default=None, help="Output audit manifest CSV path (includes LOW_QUALITY/failed)")
     parser.add_argument("--config", type=str, default=None, help="Preprocessing config YAML")
-    parser.add_argument("--dataset", type=str, default="Unknown", help="Dataset name")
-    parser.add_argument("--split", type=str, default="train", choices=["train", "val", "test"], help="Split")
-    parser.add_argument("--label", type=int, default=0, choices=[0, 1], help="Label (0=authentic, 1=manipulated)")
-    parser.add_argument("--identity-col", type=str, default=None, help="Column in manifest for identity_id")
-    parser.add_argument("--source-col", type=str, default=None, help="Column in manifest for source_id")
+    parser.add_argument("--metadata", type=str, required=True, help="Metadata CSV with per-file labels/splits (REQUIRED)")
     parser.add_argument("--recursive", action="store_true", help="Search input directory recursively")
-    parser.add_argument("--extensions", type=str, default=".jpg,.jpeg,.png,.mp4,.avi,.mov", help="File extensions to process")
+    parser.add_argument("--extensions", type=str, default=".jpg,.jpeg,.png,.mp4,.avi,.mov,.mkv,.webm", help="File extensions to process")
     parser.add_argument("--dry-run", action="store_true", help="Don't save files, just show what would be processed")
     return parser.parse_args()
 
@@ -54,43 +90,68 @@ def find_media_files(input_dir: Path, extensions: list, recursive: bool) -> list
     return sorted(files)
 
 
-def infer_metadata(file_path: Path, args) -> dict:
-    """Infer metadata from file path and arguments."""
-    # Default metadata
-    metadata = {
-        "dataset": args.dataset,
-        "label": args.label,
-        "split": args.split,
-        "identity_id": None,
-        "source_id": None,
-        "manipulation_type": "None" if args.label == 0 else "Deepfakes",
-        "generator": "None" if args.label == 0 else "faceswap",
-    }
+def load_metadata(metadata_path: Path, input_dir: Path) -> dict:
+    """
+    Load metadata from CSV.
     
-    # Try to infer from directory structure
-    # e.g., data/raw/FF++/train/id_001/video.mp4
-    parts = file_path.relative_to(Path(args.input_dir)).parts
-    if len(parts) >= 2:
-        metadata["dataset"] = parts[0]
-    if len(parts) >= 3:
-        metadata["split"] = parts[1]
-    if len(parts) >= 4:
-        # Try to extract identity from directory name
-        metadata["identity_id"] = parts[2]
+    Returns dict mapping file_path (relative to input_dir) -> metadata dict.
+    Required columns: file_path, label, dataset, split
+    Optional columns: identity_id, source_id, manipulation_type, generator
+    """
+    df = pd.read_csv(metadata_path)
     
-    return metadata
+    required_cols = {"file_path", "label", "dataset", "split"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise ValueError(f"Metadata CSV missing required columns: {missing}")
+    
+    metadata_map = {}
+    for _, row in df.iterrows():
+        # Normalize file path
+        file_path = Path(row["file_path"])
+        if not file_path.is_absolute():
+            file_path = (input_dir / file_path).resolve()
+        else:
+            file_path = file_path.resolve()
+        
+        metadata_map[str(file_path)] = {
+            "label": int(row["label"]),
+            "dataset": str(row["dataset"]),
+            "split": str(row["split"]),
+            "identity_id": str(row["identity_id"]) if pd.notna(row.get("identity_id")) else None,
+            "source_id": str(row["source_id"]) if pd.notna(row.get("source_id")) else None,
+            "manipulation_type": str(row["manipulation_type"]) if pd.notna(row.get("manipulation_type")) else None,
+            "generator": str(row["generator"]) if pd.notna(row.get("generator")) else None,
+        }
+    
+    return metadata_map
 
 
 def main():
     args = parse_args()
     
-    input_dir = Path(args.input_dir)
-    output_dir = Path(args.output_dir)
-    manifest_path = Path(args.manifest)
+    input_dir = Path(args.input_dir).resolve()
+    output_dir = Path(args.output_dir).resolve()
+    manifest_path = Path(args.manifest).resolve()
+    audit_manifest_path = Path(args.audit_manifest).resolve() if args.audit_manifest else None
+    metadata_path = Path(args.metadata).resolve()
     
     if not input_dir.exists():
         print(f"Error: Input directory {input_dir} does not exist")
         sys.exit(1)
+    
+    if not metadata_path.exists():
+        print(f"Error: Metadata file {metadata_path} does not exist")
+        sys.exit(1)
+    
+    # Load metadata
+    try:
+        metadata_map = load_metadata(metadata_path, input_dir)
+    except Exception as e:
+        print(f"Error loading metadata: {e}")
+        sys.exit(1)
+    
+    print(f"Loaded metadata for {len(metadata_map)} files")
     
     # Load config
     config_path = Path(args.config) if args.config else None
@@ -98,7 +159,7 @@ def main():
     
     print(f"Preprocessing config:")
     print(f"  Face detector: {config.face_detector}")
-    print(f"  Bbox margin: {config.bbox_margin} (20% expansion)")
+    print(f"  Bbox margin: {config.bbox_margin} (20% expansion per side)")
     print(f"  Target size: {config.target_size}")
     print(f"  Min confidence: {config.min_confidence}")
     print(f"  Output format: {config.output_format}")
@@ -111,7 +172,31 @@ def main():
     extensions = [e.strip() for e in args.extensions.split(",")]
     media_files = find_media_files(input_dir, extensions, args.recursive)
     
-    print(f"\nFound {len(media_files)} media files")
+    print(f"\nFound {len(media_files)} media files in input directory")
+    
+    # Match media files with metadata
+    matched_files = []
+    unmatched_files = []
+    
+    for media_file in media_files:
+        media_file_resolved = media_file.resolve()
+        if str(media_file_resolved) in metadata_map:
+            matched_files.append((media_file_resolved, metadata_map[str(media_file_resolved)]))
+        else:
+            unmatched_files.append(str(media_file_resolved))
+    
+    if unmatched_files:
+        print(f"WARNING: {len(unmatched_files)} files have no metadata entry (will be skipped):")
+        for f in unmatched_files[:10]:
+            print(f"  {f}")
+        if len(unmatched_files) > 10:
+            print(f"  ... and {len(unmatched_files) - 10} more")
+    
+    if not matched_files:
+        print("ERROR: No files matched with metadata. Check your metadata CSV.")
+        sys.exit(1)
+    
+    print(f"Processing {len(matched_files)} files with metadata...")
     
     # Initialize preprocessors
     image_preprocessor = ImagePreprocessor(config)
@@ -122,13 +207,8 @@ def main():
     
     all_samples = []
     
-    for media_file in media_files:
-        # Generate media_id from file path
+    for media_file, metadata in matched_files:
         media_id = media_file.stem
-        
-        # Infer metadata
-        metadata = infer_metadata(media_file, args)
-        
         is_video = media_file.suffix.lower() in video_exts
         
         if args.dry_run:
@@ -159,10 +239,17 @@ def main():
                 print(f"    Status: {sample.processing_status}")
         except Exception as e:
             print(f"    ERROR: {e}")
+            import traceback
+            traceback.print_exc()
     
-    # Create manifest
+    # Create training-ready manifest (SUCCESS only)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     create_manifest(all_samples, manifest_path)
+    
+    # Create audit manifest (all samples including LOW_QUALITY/failed)
+    if audit_manifest_path:
+        create_audit_manifest(all_samples, audit_manifest_path)
+        print(f"  Audit manifest saved to: {audit_manifest_path}")
     
     # Print summary
     successful = [s for s in all_samples if s.processing_status == "SUCCESS"]
@@ -172,10 +259,10 @@ def main():
     print(f"\n{'='*50}")
     print(f"Preprocessing complete!")
     print(f"  Total samples: {len(all_samples)}")
-    print(f"  Successful: {len(successful)}")
-    print(f"  Low quality: {len(low_quality)}")
+    print(f"  Successful (training-ready): {len(successful)}")
+    print(f"  Low quality (excluded from training): {len(low_quality)}")
     print(f"  Failed: {len(failed)}")
-    print(f"  Manifest saved to: {manifest_path}")
+    print(f"  Training manifest saved to: {manifest_path}")
     
     if failed:
         print(f"\nFailure breakdown:")

@@ -19,7 +19,8 @@ PREFERRED_COLUMNS = [
     "source_id",
     "manipulation_type",
     "generator",
-    "sha256",
+    "source_sha256",
+    "derived_sha256",
 ]
 
 VALID_LABELS = {0, 1}  # 0 = AUTHENTIC, 1 = MANIPULATED
@@ -79,9 +80,25 @@ class Manifest:
         if "identity_id" in self.dataframe.columns:
             self._validate_split_exclusivity("identity_id", "identity_id")
 
-        # Validate no cross-split leakage by sha256 (if column exists)
+        # Validate no cross-split leakage by source_id (if column exists)
+        if "source_id" in self.dataframe.columns:
+            self._validate_split_exclusivity("source_id", "source_id")
+
+        # Validate no cross-split leakage by source_sha256 (source-level leakage prevention)
+        if "source_sha256" in self.dataframe.columns:
+            valid_hashes = self.dataframe["source_sha256"].notna() & (self.dataframe["source_sha256"] != "")
+            if valid_hashes.any():
+                self._validate_split_exclusivity("source_sha256", "source_sha256", mask=valid_hashes)
+
+        # Validate no cross-split leakage by derived_sha256 (artifact deduplication)
+        if "derived_sha256" in self.dataframe.columns:
+            valid_hashes = self.dataframe["derived_sha256"].notna() & (self.dataframe["derived_sha256"] != "")
+            if valid_hashes.any():
+                self._validate_split_exclusivity("derived_sha256", "derived_sha256", mask=valid_hashes)
+
+        # Legacy sha256 column support (for backward compatibility)
+        # Only used for artifact deduplication if present
         if "sha256" in self.dataframe.columns:
-            # Only validate non-dummy hashes
             valid_hashes = self.dataframe["sha256"].notna() & (self.dataframe["sha256"] != "") & ~self.dataframe["sha256"].str.startswith("dummy_hash")
             if valid_hashes.any():
                 self._validate_split_exclusivity("sha256", "sha256", mask=valid_hashes)

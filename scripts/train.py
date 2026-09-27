@@ -17,8 +17,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from deepfake_forensics.data import (
     create_datasets,
-    get_eval_transforms,
-    get_train_transforms,
+    get_s01_train_transforms,
+    get_s01_eval_transforms,
     load_manifest,
 )
 from deepfake_forensics.evaluation import compute_binary_metrics, evaluate
@@ -69,16 +69,14 @@ def main():
     manifest_hash = manifest.compute_hash()
 
     # Create transforms
-    train_transform = get_train_transforms(
-        target_size=tuple(config.data.target_size),
+    train_transform = get_s01_train_transforms(
         hflip_prob=config.data.train_transforms.hflip_prob,
         color_jitter=config.data.train_transforms.color_jitter,
         random_erase_prob=config.data.train_transforms.random_erase_prob,
         normalize=config.data.train_transforms.normalize,
     )
 
-    eval_transform = get_eval_transforms(
-        target_size=tuple(config.data.target_size),
+    eval_transform = get_s01_eval_transforms(
         normalize=config.data.eval_transforms.normalize,
     )
 

@@ -9,7 +9,7 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -26,6 +26,7 @@ from deepfake_forensics.preprocessing.face_detector import (
     compute_quality_metrics,
     estimate_similarity_transform,
     expand_bbox,
+    transform_landmarks_to_crop,
 )
 
 
@@ -138,6 +139,7 @@ class PreprocessedSample:
     
     # Landmarks
     landmarks: Optional[List[Tuple[float, float]]] = None
+    landmarks_crop: Optional[List[Tuple[float, float]]] = None
     landmark_status: str = ProcessingStatus.NO_FACE
     
     # Alignment
@@ -160,7 +162,7 @@ class PreprocessedSample:
     # Metadata
     preprocessing_version: str = "1.0"
     preprocessing_config_hash: Optional[str] = None
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'))
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for manifest generation."""
@@ -189,6 +191,7 @@ class PreprocessedSample:
             "expanded_bbox_h": (self.expanded_bbox[3] - self.expanded_bbox[1]) if self.expanded_bbox else None,
             "detector_confidence": self.detector_confidence,
             "landmarks": self.landmarks,
+            "landmarks_crop": self.landmarks_crop,
             "landmark_status": self.landmark_status,
             "alignment_status": self.alignment_status,
             "alignment_transform": self.alignment_transform,
@@ -333,14 +336,26 @@ class ImagePreprocessor:
             sample.processing_status = ProcessingStatus.LANDMARK_FAILURE
             return sample
         
-        # Convert landmarks to list of tuples
+        # Convert landmarks to list of tuples (source image coordinates)
         landmarks_list = [(float(x), float(y)) for x, y in primary_face.landmarks]
         sample.landmarks = landmarks_list
         sample.landmark_status = ProcessingStatus.SUCCESS
         
-        # Estimate similarity transform
-        src_lm = primary_face.landmarks.astype(np.float32)
-        transform = estimate_similarity_transform(src_lm, self.config.canonical_landmarks)
+        # Crop expanded region from source image
+        x1, y1, x2, y2 = expanded
+        expanded_crop = image.crop((x1, y1, x2, y2))
+        
+        # Transform landmarks to expanded-crop coordinates
+        src_lm_crop = transform_landmarks_to_crop(
+            primary_face.landmarks.astype(np.float32),
+            expanded,
+        )
+        
+        # Store crop-relative landmarks as well
+        sample.landmarks_crop = [(float(x), float(y)) for x, y in src_lm_crop]
+        
+        # Estimate similarity transform from crop-relative landmarks
+        transform = estimate_similarity_transform(src_lm_crop, self.config.canonical_landmarks)
         
         if transform is None:
             sample.alignment_status = ProcessingStatus.ALIGNMENT_FAILURE
@@ -349,9 +364,9 @@ class ImagePreprocessor:
         
         sample.alignment_transform = transform.tolist()
         
-        # Apply alignment and crop to 224x224
+        # Apply alignment to expanded crop (not full image)
         aligned = apply_similarity_transform(
-            image,
+            expanded_crop,
             transform,
             output_size=self.config.target_size,
         )
@@ -542,9 +557,27 @@ class VideoPreprocessor:
                     sample.landmarks = landmarks_list
                     sample.landmark_status = ProcessingStatus.SUCCESS
                     
-                    # Alignment
-                    src_lm = primary_face.landmarks.astype(np.float32)
-                    transform = estimate_similarity_transform(src_lm, self.config.canonical_landmarks)
+                    # Expand bbox
+                    expanded = expand_bbox(
+                        primary_face.bbox,
+                        primary_face.image_size,
+                        margin=self.config.bbox_margin,
+                    )
+                    sample.expanded_bbox = expanded
+                    
+                    # Crop expanded region from source image
+                    x1, y1, x2, y2 = expanded
+                    expanded_crop = image.crop((x1, y1, x2, y2))
+                    
+                    # Transform landmarks to expanded-crop coordinates
+                    src_lm_crop = transform_landmarks_to_crop(
+                        primary_face.landmarks.astype(np.float32),
+                        expanded,
+                    )
+                    sample.landmarks_crop = [(float(x), float(y)) for x, y in src_lm_crop]
+                    
+                    # Estimate similarity transform from crop-relative landmarks
+                    transform = estimate_similarity_transform(src_lm_crop, self.config.canonical_landmarks)
                     
                     if transform is None:
                         sample.alignment_status = ProcessingStatus.ALIGNMENT_FAILURE
@@ -553,9 +586,9 @@ class VideoPreprocessor:
                     else:
                         sample.alignment_transform = transform.tolist()
                         
-                        # Apply alignment
+                        # Apply alignment to expanded crop (not full image)
                         aligned = apply_similarity_transform(
-                            image,
+                            expanded_crop,
                             transform,
                             output_size=self.config.target_size,
                         )
@@ -608,21 +641,39 @@ class VideoPreprocessor:
 
 def create_manifest(samples: List[PreprocessedSample], output_path: Path) -> None:
     """
-    Create a manifest CSV from preprocessed samples.
+    Create a training-ready manifest CSV from preprocessed samples.
     
-    Only includes samples with SUCCESS or LOW_QUALITY status.
-    Failed samples are logged but not added to the training manifest.
+    Only includes samples with SUCCESS status.
+    LOW_QUALITY and failed samples are excluded from training manifest
+    but can be written to an audit manifest via create_audit_manifest.
     """
-    # Filter for usable samples
-    usable = [s for s in samples if s.processing_status in (ProcessingStatus.SUCCESS, ProcessingStatus.LOW_QUALITY)]
+    # Filter for SUCCESS only (training-ready)
+    training_samples = [s for s in samples if s.processing_status == ProcessingStatus.SUCCESS]
     
-    if not usable:
+    if not training_samples:
         # Create empty manifest with correct columns
-        df = pd.DataFrame(columns=usable[0].to_dict().keys() if usable else [])
+        df = pd.DataFrame(columns=training_samples[0].to_dict().keys() if training_samples else [])
         df.to_csv(output_path, index=False)
         return
     
-    df = pd.DataFrame([s.to_dict() for s in usable])
+    df = pd.DataFrame([s.to_dict() for s in training_samples])
+    df.to_csv(output_path, index=False)
+
+
+def create_audit_manifest(samples: List[PreprocessedSample], output_path: Path) -> None:
+    """
+    Create an audit manifest containing all samples including LOW_QUALITY and failures.
+    
+    This provides traceability for samples excluded from the training manifest.
+    Includes: sample_id, media_id, frame_index, processing_status, quality metrics,
+    source_path, source_sha256, and all preprocessing metadata.
+    """
+    if not samples:
+        df = pd.DataFrame()
+        df.to_csv(output_path, index=False)
+        return
+    
+    df = pd.DataFrame([s.to_dict() for s in samples])
     df.to_csv(output_path, index=False)
 
 
